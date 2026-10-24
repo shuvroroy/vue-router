@@ -17,16 +17,16 @@ import {
   IS_SSR_KEY,
   DATA_LOADERS_EFFECT_SCOPE_KEY,
   NavigationResult,
-  assign,
   getCurrentContext,
   isSubsetOf,
   setCurrentContext,
   trackRoute,
 } from './entries/index'
-import { type ShallowRef, shallowRef, watch } from 'vue'
+import { type EffectScope, type ShallowRef, shallowRef, watch } from 'vue'
 import {
   type DefineQueryOptions,
   type EntryKey,
+  type UseQueryEntry,
   type UseQueryOptions,
   type UseQueryReturn,
   useQuery,
@@ -44,8 +44,9 @@ import type {
 } from '../../typed-routes'
 import { useRoute, useRouter } from '../../useApi'
 import type { Router } from '../../router'
-import type { LocationQuery } from '../query'
+import type { LocationQuery } from '../../query'
 import { diagnostics } from '../../diagnostics'
+import { assign } from '../../utils'
 
 /**
  * Creates a Pinia Colada data loader with `data` is always defined.
@@ -311,9 +312,10 @@ export function defineColadaLoader<Data>(
       entry.ext = useDefinedQuery()
       // remove the data loader effect scope so that queries
       // can be marked as inactive
-      useQueryCache()
-        .get(toValueWithParameters(keyOption, to))
-        ?.deps.delete(router[DATA_LOADERS_EFFECT_SCOPE_KEY])
+      untrackLoaderQuery(
+        useQueryCache().get(toValueWithParameters(keyOption, to)),
+        router[DATA_LOADERS_EFFECT_SCOPE_KEY]
+      )
 
       // avoid double reload since calling `useQuery()` will trigger a refresh
       // and we might also do it below for nested loaders
@@ -550,9 +552,10 @@ export function defineColadaLoader<Data>(
 
     // remove the data loader effect scope so that queries
     // can be marked as inactive when navigating away
-    useQueryCache()
-      .get(toValueWithParameters(keyOption, route))
-      ?.deps.delete(router[DATA_LOADERS_EFFECT_SCOPE_KEY])
+    untrackLoaderQuery(
+      useQueryCache().get(toValueWithParameters(keyOption, route)),
+      router[DATA_LOADERS_EFFECT_SCOPE_KEY]
+    )
 
     // TODO: add watchers only once alongside the entry
     // update the data when pinia colada updates it e.g. after visibility change
@@ -635,6 +638,22 @@ export function defineColadaLoader<Data>(
   }
 
   return useDataLoader
+}
+
+/**
+ * Removes loader scope consumers so unused queries can become inactive.
+ */
+function untrackLoaderQuery(
+  queryEntry: UseQueryEntry | undefined,
+  scope: EffectScope
+) {
+  if (!queryEntry) return
+
+  for (const consumer of queryEntry.deps) {
+    if (('owner' in consumer ? consumer.owner : consumer) === scope) {
+      queryEntry.deps.delete(consumer)
+    }
+  }
 }
 
 export const joinKeys = (keys: string[]): string => keys.join('|')

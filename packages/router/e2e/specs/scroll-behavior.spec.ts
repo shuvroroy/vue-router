@@ -22,7 +22,81 @@ const anchorTop = (page: Page, id: string) =>
     id
   )
 
+async function navigate(page: Page, to: string | number, replace = false) {
+  await page.evaluate(
+    async ({ to, replace }) => {
+      const router = window.vm.$router
+      if (typeof to === 'string') {
+        await router[replace ? 'replace' : 'push'](to)
+      } else {
+        await new Promise<void>(resolve => {
+          const remove = router.afterEach(() => {
+            remove()
+            resolve()
+          })
+          router.go(to)
+        })
+      }
+    },
+    { to, replace }
+  )
+  await expect(
+    page.locator('.fade-enter-active, .fade-leave-active')
+  ).toHaveCount(0)
+}
+
 test.describe('scroll-behavior', () => {
+  test('restores the new position after replacing the forward branch', async ({
+    page,
+  }) => {
+    await page.goto('/scroll-behavior/')
+    await expect(page.locator('.view.home')).toBeVisible()
+    await navigate(page, '/foo')
+    await page.evaluate(() => window.scrollTo(0, 1000))
+    await navigate(page, -1)
+    await navigate(page, '/foo')
+    await page.evaluate(() => window.scrollTo(0, 2000))
+    await navigate(page, '/')
+    await navigate(page, -1)
+
+    await expect.poll(() => scrollY(page)).toBe(2000)
+    expect(await page.evaluate(() => window.history.state.scroll.top)).toBe(
+      2000
+    )
+  })
+
+  test('discards other URLs from a removed forward branch', async ({
+    page,
+  }) => {
+    await page.goto('/scroll-behavior/')
+    await expect(page.locator('.view.home')).toBeVisible()
+    await navigate(page, '/foo')
+    await navigate(page, '/bar#anchor')
+    await page.evaluate(() => window.scrollTo(0, 1000))
+    await navigate(page, -2)
+    await navigate(page, '/foo')
+    await navigate(page, '/bar')
+    await page.evaluate(() => {
+      window.location.hash = '#anchor'
+    })
+
+    await expect.poll(() => anchorTop(page, 'anchor')).toBeLessThan(1)
+  })
+
+  test('preserves the forward branch on replace', async ({ page }) => {
+    await page.goto('/scroll-behavior/')
+    await expect(page.locator('.view.home')).toBeVisible()
+    await navigate(page, '/foo')
+    await navigate(page, '/bar')
+    await page.evaluate(() => window.scrollTo(0, 2000))
+    await navigate(page, -2)
+    await navigate(page, '/bar', true)
+    await navigate(page, 1)
+    await navigate(page, 1)
+
+    await expect.poll(() => scrollY(page)).toBe(2000)
+  })
+
   test('does not restore saved positions for manual hash changes', async ({
     page,
   }) => {
@@ -50,6 +124,38 @@ test.describe('scroll-behavior', () => {
       window.location.hash = '#anchor2'
     })
     await expect.poll(() => anchorTop(page, 'anchor2')).toBeLessThan(101)
+  })
+
+  // https://github.com/nuxt/nuxt/issues/36660
+  test.describe('same page hash links', () => {
+    test.beforeEach(async ({ page }) => {
+      await page.goto('/scroll-behavior/bar')
+      await expect(page.locator('.view.bar')).toBeVisible()
+      await page.evaluate(() => window.scrollTo(0, 300))
+    })
+
+    test('restores the position on back after a router-link', async ({
+      page,
+    }) => {
+      await clickLink(link(page, '/bar#anchor'))
+      await expect(page).toHaveURL(/\/bar#anchor$/)
+      await expect.poll(() => anchorTop(page, 'anchor')).toBeLessThan(1)
+
+      await page.evaluate(() => window.history.back())
+      await expect(page).toHaveURL(/\/bar$/)
+      await expect.poll(() => scrollY(page)).toBe(300)
+    })
+
+    test('scrolls to the top when pushing the path without the hash', async ({
+      page,
+    }) => {
+      await clickLink(page.locator('#native-anchor'))
+      await expect.poll(() => anchorTop(page, 'anchor')).toBeLessThan(1)
+
+      await clickLink(link(page, '/bar'))
+      await expect(page).toHaveURL(/\/bar$/)
+      await expect.poll(() => scrollY(page)).toBe(0)
+    })
   })
 
   test('scroll behavior', async ({ page }) => {
